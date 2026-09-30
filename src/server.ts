@@ -25,7 +25,10 @@ const MAX_OUT = 24_000;
 
 function writeRpc(res: object) {
   const s = JSON.stringify(res);
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(s, "utf8")}\r\n\r\n${s}`);
+  // Trailing \n: mcp-go's stdio reader is ReadString('\n') — without it the
+  // JSON line is never delivered. Framed readers parse exactly Content-Length
+  // bytes and ignore the terminator.
+  process.stdout.write(`Content-Length: ${Buffer.byteLength(s, "utf8")}\r\n\r\n${s}\n`);
 }
 
 // --- path sandboxing -------------------------------------------------------
@@ -154,16 +157,49 @@ const TOOLS = [
 ];
 
 let buf = Buffer.alloc(0);
+
+// Gatehouse (mcpproxy-go) speaks mcp-go's stdio transport: NEWLINE-DELIMITED
+// JSON, no Content-Length framing. Direct stdio clients may use Content-Length
+// framing instead. Accept both: if the buffer opens with a Content-Length
+// header, parse one framed message; otherwise parse one JSON object per line
+// (blank / non-JSON lines are skipped — mcp-go does the same on its read side).
+// NOTE: our writes keep the Content-Length frame: framed readers parse the
+// frame, and mcp-go's line reader skips the header/blank lines and unmarshals
+// the JSON line. One writer serves both.
+function extractMessage(): any | null {
+  if (buf.length === 0) return null;
+  // Skip leading blank bytes (terminators left by previous writes).
+  while (buf.length > 0 && (buf[0] === 10 || buf[0] === 13)) buf = buf.subarray(1);
+  if (buf.length === 0) return null;
+  if (/^content-length:/i.test(buf.subarray(0, 64).toString())) {
+    const idx = buf.indexOf("\r\n\r\n");
+    if (idx === -1) return null;
+    const len = parseInt(
+      (buf.subarray(0, idx).toString().match(/Content-Length:\s*(\d+)/i) || [])[1] || "0",
+      10,
+    );
+    if (buf.length < idx + 4 + len) return null;
+    const msg = JSON.parse(buf.subarray(idx + 4, idx + 4 + len).toString());
+    buf = buf.subarray(idx + 4 + len);
+    return msg;
+  }
+  const nl = buf.indexOf("\n");
+  if (nl === -1) return null;
+  const line = buf.subarray(0, nl).toString().trim();
+  buf = buf.subarray(nl + 1);
+  if (!line) return extractMessage();
+  try {
+    return JSON.parse(line);
+  } catch {
+    return extractMessage(); // skip non-JSON line, keep scanning
+  }
+}
+
 process.stdin.on("data", async (chunk: Buffer) => {
   buf = Buffer.concat([buf, chunk]);
   while (true) {
-    const idx = buf.indexOf("\r\n\r\n");
-    if (idx === -1) break;
-    const len =
-      parseInt((buf.subarray(0, idx).toString().match(/Content-Length:\s*(\d+)/i) || [])[1] || "0", 10);
-    if (buf.length < idx + 4 + len) break;
-    const msg = JSON.parse(buf.subarray(idx + 4, idx + 4 + len).toString());
-    buf = buf.subarray(idx + 4 + len);
+    const msg = extractMessage();
+    if (!msg) break;
 
     const ok = (text: string) =>
       writeRpc({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }] } });
