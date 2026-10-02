@@ -80,5 +80,5 @@ Registered as the `rsync` stdio server in
 Restart Gatehouse through its owned path after config changes:
 
 ```sh
-cd /home/toxic/sovereign && sovereign/bin/pitchfork-restart   # gatehouse daemon only
+cd /home/toxic/estate && bin/pitchfork-restart gatehouse   # gatehouse daemon only
 ```
