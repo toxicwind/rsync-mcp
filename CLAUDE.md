@@ -20,7 +20,7 @@ printf '%s\n%s\n%s\n' \
   | node index.js --host <hostname>
 ```
 
-`<hostname>` must resolve via `ssh <hostname>` from the user's shell.
+`<hostname>` must resolve via `ssh <hostname>` from the architect's shell.
 
 ## Architecture
 
@@ -62,6 +62,6 @@ Release flow (after a behavior-changing commit): bump `version` in `package.json
 
 ## Don't
 
-- Don't add a Node SSH library (`ssh2`, `node-ssh`). The whole point of this server is to delegate to the system `ssh` binary so it inherits the user's SSH config.
+- Don't add a Node SSH library (`ssh2`, `node-ssh`). The whole point of this server is to delegate to the system `ssh` binary so it inherits the architect's SSH config.
 - Don't add backoff/retry loops on top of `ssh()`. It already retries once on `ETIMEDOUT`; stacking more retries hides real failures.
 - Don't log to stdout — stdout is the JSON-RPC channel. Warnings go to `process.stderr.write`.
