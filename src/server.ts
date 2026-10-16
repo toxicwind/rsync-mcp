@@ -1,6 +1,6 @@
 // rsync-mcp — the /home/toxic rsync connection as a first-class MCP server.
 // Bun/TypeScript, zero npm dependencies, stdio JSON-RPC (Content-Length framing),
-// same house pattern as sovereign/tools/tmux-mcp/server.ts.
+// same house pattern as estate-scripts/tools/tmux-mcp/server.ts.
 //
 // Fork lineage: jasonlinjc/mcp-ssh-remote (system rsync + system ssh, ssh-config
 // inheritance). Rewritten rsync-first for the estate: the connection is fully
@@ -103,7 +103,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        remote_path: { type: "string", description: "Path under the remote root, e.g. 'sovereign/projects' or '' for the root." },
+        remote_path: { type: "string", description: "Path under the remote root, e.g. 'estate-scripts/projects' or '' for the root." },
       },
     },
   },

@@ -2,7 +2,7 @@
 
 The `/home/toxic` **rsync connection as a first-class MCP server**.
 Bun/TypeScript, zero npm dependencies, stdio JSON-RPC — the same house
-pattern as `sovereign/tools/tmux-mcp/server.ts`.
+pattern as `estate-scripts/tools/tmux-mcp/server.ts`.
 
 ## Lineage
 
@@ -16,7 +16,7 @@ repo; the Bun rewrite lands on top.
 ## The connection
 
 The estate's established rsync route, as found in shell history
-(`sovereign-recon-20260928`):
+(`estate-scripts-recon-20260928`):
 
 ```
 rsync -avzP -e 'ssh -o ServerAliveInterval=30 -o ConnectTimeout=10' pc:/home/toxic/<path>/ <dest>
