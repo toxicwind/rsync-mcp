@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# rsync-mcp — MCP stdio server entry point.
+# Usage: bin/run  (speaks MCP JSON-RPC 2.0 over stdio; Content-Length framed)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec node index.js
