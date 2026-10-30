@@ -45,7 +45,7 @@ never credential values):
 
 Path rules: remote `..` segments are refused; local paths must resolve
 inside `RSYNC_LOCAL_ROOT`. Output capped at 24KB per call; per-call ceiling
-4.5 min (under Gatehouse's 5-min tool timeout).
+4.5 min (under Thresher's 5-min tool timeout).
 
 ## Run
 
@@ -53,10 +53,10 @@ inside `RSYNC_LOCAL_ROOT`. Output capped at 24KB per call; per-call ceiling
 bun src/server.ts
 ```
 
-## Gatehouse
+## Thresher
 
 Registered as the `rsync` stdio server in
-`ranch/barn/gatehouse/mcp_config.json` (+ durable `mcp_config.json.dist`):
+`ranch/barn/thresher/mcp_config.json` (+ durable `mcp_config.json.dist`):
 
 ```json
 {
@@ -77,8 +77,8 @@ Registered as the `rsync` stdio server in
 }
 ```
 
-Restart Gatehouse through its owned path after config changes:
+Restart Thresher through its owned path after config changes:
 
 ```sh
-cd /home/toxic/estate && bin/pitchfork-restart gatehouse   # gatehouse daemon only
+cd /home/toxic/estate && bin/pitchfork-restart thresher   # thresher daemon only
 ```

@@ -20,7 +20,7 @@ const REMOTE_ROOT = (process.env.RSYNC_REMOTE_ROOT ?? "/home/toxic").replace(/\/
 const SSH_OPTS = process.env.RSYNC_SSH_OPTS ?? "-o ServerAliveInterval=30 -o ConnectTimeout=10";
 const LOCAL_ROOT = resolve(process.env.RSYNC_LOCAL_ROOT ?? "/home/toxic");
 const FLAGS = (process.env.RSYNC_FLAGS ?? "-avzP").split(/\s+/).filter(Boolean);
-const TOOL_TIMEOUT_MS = 270_000; // 4.5 min — under Gatehouse's 5-min tool timeout
+const TOOL_TIMEOUT_MS = 270_000; // 4.5 min — under Thresher's 5-min tool timeout
 const MAX_OUT = 24_000;
 
 function writeRpc(res: object) {
@@ -158,7 +158,7 @@ const TOOLS = [
 
 let buf = Buffer.alloc(0);
 
-// Gatehouse (mcpproxy-go) speaks mcp-go's stdio transport: NEWLINE-DELIMITED
+// Thresher (mcpproxy-go) speaks mcp-go's stdio transport: NEWLINE-DELIMITED
 // JSON, no Content-Length framing. Direct stdio clients may use Content-Length
 // framing instead. Accept both: if the buffer opens with a Content-Length
 // header, parse one framed message; otherwise parse one JSON object per line

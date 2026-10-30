@@ -1,4 +1,8 @@
 {
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "bun-types": "^1.4.4"
+  },
   "name": "mcp-ssh-remote",
   "version": "2.4.0",
   "description": "MCP server that wraps the system ssh binary — supports ProxyCommand, bastion hosts, Slurm job management, rsync, and any ~/.ssh/config setup",
