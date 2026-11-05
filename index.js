@@ -108,33 +108,38 @@ function rsyncSshOption() {
     : `${base} -o ControlPath=${CONTROL_PATH} -o ControlMaster=auto`;
 }
 
-function ssh(remoteCmd, timeout = SSH_TIMEOUT) {
+async function ssh(remoteCmd, timeout = SSH_TIMEOUT) {
   ensureConnection();
-  // Wrap in login shell so ~/.bashrc / /etc/profile.d are sourced (Slurm, conda, etc.)
+  // Async spawn: NEVER block the event loop — thresher's 15s health check
+  // kills the server when spawnSync blocks it (the "transport closed" bug).
   const wrappedCmd = `bash -l -c ${shellQuote(remoteCmd)}`;
-  const result = spawnSync('ssh', [...sshArgs(), wrappedCmd],
-    { encoding: 'utf8', timeout: (timeout + 5) * 1000 });
+  const run = () => Bun.spawn(['ssh', ...sshArgs(), wrappedCmd], {
+    stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
+  });
+  let proc = run();
+  let timer = setTimeout(() => proc.kill(), (timeout + 5) * 1000);
+  let [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  clearTimeout(timer);
+  let status = proc.exitCode ?? -1;
 
   // Retry once on timeout — ControlMaster may have dropped mid-flight
-  if (result.error?.code === 'ETIMEDOUT') {
-    process.stderr.write('SSH timed out, retrying after reconnect...\n');
+  if (status === -1 || status === 137) {
+    process.stderr.write('SSH timed out/killed, retrying after reconnect...\n');
     startControlMaster();
-    const retry = spawnSync('ssh', [...sshArgs(), wrappedCmd],
-      { encoding: 'utf8', timeout: (timeout + 5) * 1000 });
-    return {
-      stdout: retry.stdout ?? '',
-      stderr: retry.stderr ?? '',
-      status: retry.status ?? -1,
-      error: retry.error?.message ?? null
-    };
+    proc = run();
+    timer = setTimeout(() => proc.kill(), (timeout + 5) * 1000);
+    [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+    ]);
+    await proc.exited;
+    clearTimeout(timer);
+    status = proc.exitCode ?? -1;
   }
 
-  return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    status: result.status ?? -1,
-    error: result.error?.message ?? null
-  };
+  return { stdout, stderr, status, error: null };
 }
 
 function shellQuote(s) {
@@ -142,21 +147,22 @@ function shellQuote(s) {
 }
 
 // Pipe content via stdin to avoid ARG_MAX limits
-function sshWithStdin(remoteCmd, stdinData, timeout = SSH_TIMEOUT) {
+async function sshWithStdin(remoteCmd, stdinData, timeout = SSH_TIMEOUT) {
   ensureConnection();
   const wrappedCmd = `bash -l -c ${shellQuote(remoteCmd)}`;
-  const result = spawnSync('ssh', [...sshArgs(), wrappedCmd], {
-    input: stdinData,
-    encoding: 'utf8',
-    timeout: (timeout + 5) * 1000,
-    maxBuffer: 50 * 1024 * 1024 // 50MB
+  const proc = Bun.spawn(['ssh', ...sshArgs(), wrappedCmd], {
+    stdout: 'pipe', stderr: 'pipe', stdin: 'pipe',
   });
-  return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    status: result.status ?? -1,
-    error: result.error?.message ?? null
-  };
+  const writer = proc.stdin.getWriter();
+  await writer.write(new TextEncoder().encode(stdinData));
+  await writer.close();
+  const timer = setTimeout(() => proc.kill(), (timeout + 5) * 1000);
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(), new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  clearTimeout(timer);
+  return { stdout, stderr, status: proc.exitCode ?? -1, error: null };
 }
 
 function respond(id, result) {
@@ -435,11 +441,11 @@ const TOOLS = [
   }
 ];
 
-function handleToolCall(name, args) {
+async function handleToolCall(name, args) {
   // --- execute_command ---
   if (name === 'execute_command') {
     const timeout = Math.min(args.timeout || SSH_TIMEOUT, LONG_TIMEOUT);
-    const r = ssh(args.command, timeout);
+    const r = await ssh(args.command, timeout);
     const out = r.error
       ? `ERROR: ${r.error}\nstderr: ${r.stderr}`
       : (r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
@@ -459,7 +465,7 @@ function handleToolCall(name, args) {
     } else {
       cmd = `cat -n '${sp}'`;
     }
-    const r = ssh(cmd, 60);
+    const r = await ssh(cmd, 60);
     if (r.error || r.status !== 0)
       return { content: [{ type: 'text', text: `Error reading file: ${r.stderr || r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout }] };
@@ -470,7 +476,7 @@ function handleToolCall(name, args) {
     const sp = safePath(args.path);
     const dir = safePath(path.posix.dirname(args.path));
     // Pipe via stdin to handle large files and special characters
-    const r = sshWithStdin(`mkdir -p '${dir}' && cat > '${sp}'`, args.content, 120);
+    const r = await sshWithStdin(`mkdir -p '${dir}' && cat > '${sp}'`, args.content, 120);
     if (r.error || r.status !== 0)
       return { content: [{ type: 'text', text: `Error writing file: ${r.stderr || r.error}` }], isError: true };
     return { content: [{ type: 'text', text: `Written to ${args.path}` }] };
@@ -481,7 +487,7 @@ function handleToolCall(name, args) {
     const sp = safePath(args.path);
 
     // First check the old_string occurs exactly once
-    const countR = sshWithStdin(
+    const countR = await sshWithStdin(
       `python3 -c "
 import sys
 content = open('${sp}', 'r').read()
@@ -501,7 +507,7 @@ print(count)
 
     // Perform the replacement using python to handle multiline and special chars safely
     const editPayload = JSON.stringify({ old: args.old_string, new: args.new_string });
-    const editR = sshWithStdin(
+    const editR = await sshWithStdin(
       `python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -519,7 +525,7 @@ print('OK')
   // --- list_directory ---
   if (name === 'list_directory') {
     const sp = safePath(args.path);
-    const r = ssh(`ls -la '${sp}'`);
+    const r = await ssh(`ls -la '${sp}'`);
     if (r.error || r.status !== 0)
       return { content: [{ type: 'text', text: `Error listing directory: ${r.stderr || r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout }] };
@@ -532,7 +538,7 @@ print('OK')
     const flags = ['-rn', '--color=never'];
     if (args.case_insensitive) flags.push('-i');
     if (args.include) flags.push(`--include='${args.include}'`);
-    const r = ssh(`grep ${flags.join(' ')} '${safePath(args.pattern)}' '${sp}' | head -n ${maxResults}`, 60);
+    const r = await ssh(`grep ${flags.join(' ')} '${safePath(args.pattern)}' '${sp}' | head -n ${maxResults}`, 60);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
     if (r.status === 1)
@@ -546,7 +552,7 @@ print('OK')
   if (name === 'glob_files') {
     const sp = safePath(args.path);
     const pattern = safePath(args.pattern);
-    const r = ssh(`find '${sp}' -path '${pattern}' -type f 2>/dev/null | head -n 200`, 60);
+    const r = await ssh(`find '${sp}' -path '${pattern}' -type f 2>/dev/null | head -n 200`, 60);
     if (r.error || r.status !== 0)
       return { content: [{ type: 'text', text: `Error: ${r.stderr || r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout || 'No files found.' }] };
@@ -555,7 +561,7 @@ print('OK')
   // --- slurm_status ---
   if (name === 'slurm_status') {
     const userFlag = args.all_users ? '' : '-u $USER';
-    const r = ssh(`squeue ${userFlag} -o "%.10i %.12P %.30j %.8u %.2t %.12M %.6D %R" 2>&1`, 30);
+    const r = await ssh(`squeue ${userFlag} -o "%.10i %.12P %.30j %.8u %.2t %.12M %.6D %R" 2>&1`, 30);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout + (r.stderr ? `\n${r.stderr}` : '') }] };
@@ -568,7 +574,7 @@ print('OK')
     // If inline content provided, write it to a temp file
     if (!scriptPath && args.script_content) {
       const tmpPath = `/tmp/mcp_sbatch_${Date.now()}.sh`;
-      const writeR = sshWithStdin(`cat > '${tmpPath}' && chmod +x '${tmpPath}'`, args.script_content, 15);
+      const writeR = await sshWithStdin(`cat > '${tmpPath}' && chmod +x '${tmpPath}'`, args.script_content, 15);
       if (writeR.error || writeR.status !== 0)
         return { content: [{ type: 'text', text: `Error writing script: ${writeR.stderr || writeR.error}` }], isError: true };
       scriptPath = tmpPath;
@@ -585,7 +591,7 @@ print('OK')
     if (args.time) sbatchArgs.push(`-t ${args.time}`);
     if (args.extra_args) sbatchArgs.push(args.extra_args);
 
-    const r = ssh(`sbatch ${sbatchArgs.join(' ')} '${safePath(scriptPath)}' 2>&1`, 30);
+    const r = await ssh(`sbatch ${sbatchArgs.join(' ')} '${safePath(scriptPath)}' 2>&1`, 30);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout + (r.stderr ? `\n${r.stderr}` : '') }] };
@@ -593,7 +599,7 @@ print('OK')
 
   // --- slurm_cancel ---
   if (name === 'slurm_cancel') {
-    const r = ssh(`scancel ${args.job_id} 2>&1`, 15);
+    const r = await ssh(`scancel ${args.job_id} 2>&1`, 15);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout || `Cancelled job ${args.job_id}` }] };
@@ -601,7 +607,7 @@ print('OK')
 
   // --- slurm_job_info ---
   if (name === 'slurm_job_info') {
-    const r = ssh(`scontrol show job ${args.job_id} 2>&1`, 15);
+    const r = await ssh(`scontrol show job ${args.job_id} 2>&1`, 15);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout + (r.stderr ? `\n${r.stderr}` : '') }] };
@@ -611,7 +617,7 @@ print('OK')
   if (name === 'slurm_log') {
     const lines = args.lines || 100;
     // First find the log file path from job info
-    const infoR = ssh(`scontrol show job ${args.job_id} 2>&1`, 15);
+    const infoR = await ssh(`scontrol show job ${args.job_id} 2>&1`, 15);
     if (infoR.error)
       return { content: [{ type: 'text', text: `Error: ${infoR.error}` }], isError: true };
 
@@ -621,7 +627,7 @@ print('OK')
       return { content: [{ type: 'text', text: `Could not find ${field} path for job ${args.job_id}. Job info:\n${infoR.stdout}` }] };
 
     const logPath = match[1].trim();
-    const r = ssh(`tail -n ${lines} '${safePath(logPath)}' 2>&1`, 60);
+    const r = await ssh(`tail -n ${lines} '${safePath(logPath)}' 2>&1`, 60);
     if (r.error)
       return { content: [{ type: 'text', text: `Error reading log: ${r.error}` }], isError: true };
     return { content: [{ type: 'text', text: `=== ${field}: ${logPath} (last ${lines} lines) ===\n${r.stdout}` }] };
@@ -669,7 +675,7 @@ print('OK')
   if (name === 'git_pull_remote') {
     const sp = safePath(args.path);
     const branch = args.branch ? ` origin ${args.branch}` : '';
-    const r = ssh(`cd '${sp}' && git pull${branch} 2>&1`, 60);
+    const r = await ssh(`cd '${sp}' && git pull${branch} 2>&1`, 60);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout + (r.stderr ? `\n${r.stderr}` : '') }] };
@@ -716,7 +722,7 @@ print('OK')
   if (name === 'slurm_array_summary') {
     const jobId = args.job_id;
     // Get per-task status via sacct (works for running and completed jobs)
-    const r = ssh(`sacct -j ${jobId} --format=JobID%30,State%20,ExitCode%10,Elapsed%12,NodeList%15 --noheader --parsable2 2>&1`, 30);
+    const r = await ssh(`sacct -j ${jobId} --format=JobID%30,State%20,ExitCode%10,Elapsed%12,NodeList%15 --noheader --parsable2 2>&1`, 30);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
 
@@ -742,7 +748,7 @@ print('OK')
 
     if (tasks.length === 0) {
       // Fallback: maybe it's still pending as a batch, check squeue
-      const sq = ssh(`squeue -j ${jobId} -o "%.10i %.2t %.12M %R" --noheader 2>&1`, 15);
+      const sq = await ssh(`squeue -j ${jobId} -o "%.10i %.2t %.12M %R" --noheader 2>&1`, 15);
       return { content: [{ type: 'text', text: `No completed/running task data from sacct.\nsqueue:\n${sq.stdout || '(no output)'}` }] };
     }
 
@@ -785,7 +791,7 @@ print('OK')
   if (name === 'tail_file') {
     const sp = safePath(args.path);
     const lines = args.lines || 50;
-    const r = ssh(`tail -n ${lines} '${sp}' 2>&1`, 60);
+    const r = await ssh(`tail -n ${lines} '${sp}' 2>&1`, 60);
     if (r.error || r.status !== 0)
       return { content: [{ type: 'text', text: `Error reading file: ${r.stderr || r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout }] };
@@ -800,7 +806,7 @@ print('OK')
     } else {
       cmd = `du -sh '${sp}' 2>&1`;
     }
-    const r = ssh(cmd, 60);
+    const r = await ssh(cmd, 60);
     if (r.error || r.status !== 0)
       return { content: [{ type: 'text', text: `Error: ${r.stderr || r.error}` }], isError: true };
     return { content: [{ type: 'text', text: r.stdout }] };
@@ -822,7 +828,7 @@ print('OK')
     const errPath = `/tmp/mcp_py_${ts}.err`;
 
     // Write Python code to temp file
-    const writeR = sshWithStdin(`cat > '${pyPath}'`, args.code, 15);
+    const writeR = await sshWithStdin(`cat > '${pyPath}'`, args.code, 15);
     if (writeR.error || writeR.status !== 0)
       return { content: [{ type: 'text', text: `Error writing script: ${writeR.stderr || writeR.error}` }], isError: true };
 
@@ -852,12 +858,12 @@ conda activate ${condaEnv}
 python3 '${pyPath}'
 `;
     const scriptPath = `/tmp/mcp_py_${ts}.sh`;
-    const writeS = sshWithStdin(`cat > '${scriptPath}' && chmod +x '${scriptPath}'`, slurmScript, 15);
+    const writeS = await sshWithStdin(`cat > '${scriptPath}' && chmod +x '${scriptPath}'`, slurmScript, 15);
     if (writeS.error || writeS.status !== 0)
       return { content: [{ type: 'text', text: `Error writing Slurm script: ${writeS.stderr || writeS.error}` }], isError: true };
 
     // Submit
-    const subR = ssh(`sbatch '${scriptPath}' 2>&1`, 30);
+    const subR = await ssh(`sbatch '${scriptPath}' 2>&1`, 30);
     if (subR.error || !subR.stdout.includes('Submitted'))
       return { content: [{ type: 'text', text: `Submission failed: ${subR.stdout || ''} ${subR.stderr || subR.error || ''}` }], isError: true };
 
@@ -872,7 +878,7 @@ python3 '${pyPath}'
     let reachedTerminal = false;
 
     while (Date.now() - startTime < maxWait * 1000) {
-      const stateR = ssh(`sacct -j ${jobId} --format=State%20 --noheader --parsable2 2>&1 | head -1`, 15);
+      const stateR = await ssh(`sacct -j ${jobId} --format=State%20 --noheader --parsable2 2>&1 | head -1`, 15);
       if (stateR.stdout) {
         state = stateR.stdout.trim();
         if (TERMINAL_STATES.includes(state)) { reachedTerminal = true; break; }
@@ -893,8 +899,8 @@ python3 '${pyPath}'
     }
 
     // Terminal state reached — safe to read and clean up.
-    const outR = ssh(`cat '${outPath}' 2>/dev/null`, 30);
-    const errR = ssh(`cat '${errPath}' 2>/dev/null`, 30);
+    const outR = await ssh(`cat '${outPath}' 2>/dev/null`, 30);
+    const errR = await ssh(`cat '${errPath}' 2>/dev/null`, 30);
     ssh(`rm -f '${pyPath}' '${scriptPath}' '${outPath}' '${errPath}' 2>/dev/null`, 10);
 
     const stdout = outR.stdout || '(no output)';
@@ -912,7 +918,7 @@ python3 '${pyPath}'
   if (name === 'slurm_resubmit_failed') {
     const jobId = args.job_id;
     // Get failed task IDs via sacct
-    const r = ssh(`sacct -j ${jobId} --format=JobID%30,State%20 --noheader --parsable2 2>&1`, 30);
+    const r = await ssh(`sacct -j ${jobId} --format=JobID%30,State%20 --noheader --parsable2 2>&1`, 30);
     if (r.error)
       return { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
 
@@ -936,7 +942,7 @@ python3 '${pyPath}'
     const arraySpec = failedIds.sort((a, b) => a - b).join(',');
     const sp = safePath(args.script_path);
     const extra = args.extra_args ? ` ${args.extra_args}` : '';
-    const submitR = ssh(`sbatch --array=${arraySpec}${extra} '${sp}' 2>&1`, 30);
+    const submitR = await ssh(`sbatch --array=${arraySpec}${extra} '${sp}' 2>&1`, 30);
     if (submitR.error)
       return { content: [{ type: 'text', text: `Error submitting: ${submitR.error}` }], isError: true };
 
@@ -946,7 +952,7 @@ python3 '${pyPath}'
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
 }
 
-function dispatch(msg) {
+async function dispatch(msg) {
   const { id, method, params } = msg;
 
   if (method === 'initialize') {
@@ -965,7 +971,8 @@ function dispatch(msg) {
 
   if (method === 'tools/call') {
     try {
-      return respond(id, handleToolCall(params.name, params.arguments ?? {}));
+      const result = await handleToolCall(params.name, params.arguments ?? {});
+      return respond(id, result);
     } catch (e) {
       return respondError(id, -32603, e.message);
     }
@@ -981,6 +988,9 @@ rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); }
   catch { return respondError(null, -32700, 'Parse error'); }
-  dispatch(msg);
+  // Fire-and-forget async dispatch: the event loop stays responsive for
+  // health pings while long ssh calls run (the transport-close fix).
+  Promise.resolve(dispatch(msg)).catch((e) =>
+    respondError(msg.id ?? null, -32603, e?.message ?? 'dispatch error'));
 });
 rl.on('close', () => process.exit(0));
