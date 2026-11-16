@@ -2,7 +2,7 @@
 # rsync-mcp — self-test gate (PASS/FAIL).
 # Exercises the MCP stdio protocol + security refusals (delete-flag, path escape).
 # Verifies tools/list inventory and that dangerous operations are refused.
-# Deliberately set +e around captures so the estate run-fast shim cannot abort us mid-report.
+# Deliberately set +e around captures so the pens run-fast shim cannot abort us mid-report.
 cd "$(dirname "$0")/.."
 
 echo "== rsync-mcp check: start =="

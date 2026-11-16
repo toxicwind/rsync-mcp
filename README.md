@@ -2,21 +2,21 @@
 
 The `/home/toxic` **rsync connection as a first-class MCP server**.
 Bun/TypeScript, zero npm dependencies, stdio JSON-RPC — the same house
-pattern as `estate-scripts/tools/tmux-mcp/server.ts`.
+pattern as `pens-scripts/tools/tmux-mcp/server.ts`.
 
 ## Lineage
 
 Fork lineage: [jasonlinjc/mcp-ssh-remote](https://github.com/jasonlinjc/mcp-ssh-remote)
 (MIT) — the system-rsync + system-ssh wrapping pattern, with `~/.ssh/config`
 inheritance (so host aliases like `pc` resolve). Rewritten rsync-first for
-the estate: the connection is parameterized, both ends are sandboxed, and
+the pens: the connection is parameterized, both ends are sandboxed, and
 destructive operations are gated. Full upstream history is preserved in this
 repo; the Bun rewrite lands on top.
 
 ## The connection
 
-The estate's established rsync route, as found in shell history
-(`estate-scripts-recon-20260928`):
+The pens's established rsync route, as found in shell history
+(`pens-scripts-recon-20260928`):
 
 ```
 rsync -avzP -e 'ssh -o ServerAliveInterval=30 -o ConnectTimeout=10' pc:/home/toxic/<path>/ <dest>
@@ -80,5 +80,5 @@ Registered as the `rsync` stdio server in
 Restart Thresher through its owned path after config changes:
 
 ```sh
-cd /home/toxic/estate && bin/pitchfork-restart thresher   # thresher daemon only
+cd /home/toxic/pens/pens && bin/pitchfork-restart thresher   # thresher daemon only
 ```
